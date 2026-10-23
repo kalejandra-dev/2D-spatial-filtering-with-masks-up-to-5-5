@@ -1,0 +1,14 @@
+Estructura del proyecto:
+
+- cada uno crea su notebook para hacer pruebas porque si no, es un lío mergear los cambios. Únicamente se edita el notebook ´First Practical Work.ipynb´ al final. 
+
+C no toca filters.py, porque sus tests van en el notebook.
+
+practica1/
+├── First Practical Work.ipynb   ← notebook de entrega (solo lo edita C)
+├── filters.py                   ← funciones finales que importa el notebook
+├── images/                      ← imágenes del trabajo
+├── pruebas_A.ipynb              ← notebooks personales de pruebas
+├── pruebas_B.ipynb
+├── pruebas_C.ipynb
+└── .gitignore                   ← con __pycache__/ y .ipynb_checkpoints/
