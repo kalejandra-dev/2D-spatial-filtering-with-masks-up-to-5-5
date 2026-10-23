@@ -11,4 +11,4 @@ practica1/
 ├── pruebas_A.ipynb              ← notebooks personales de pruebas
 ├── pruebas_B.ipynb
 ├── pruebas_C.ipynb
-└── .gitignore                   ← con __pycache__/ y .ipynb_checkpoints/
+└── .gitignore                
