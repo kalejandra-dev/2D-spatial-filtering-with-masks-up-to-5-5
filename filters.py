@@ -176,5 +176,165 @@ def filter_sequential(image, mask, is_conv=0, norm=0):
     return from_3d(finalize(S, norm), original_ndim)
 
 # ========== PARTE B: parallelization (just B edits) ==========
-# def image_filter(...): ...
-# def parallel_filtering(...): ...
+
+"""
+PART B: parallel version of the filter.
+
+image_filter splits the rows of the image into numprocs contiguous strips
+(medium-grained parallelism) and each process of a Pool runs A's filter_rows
+on its strip. Input and output live in shared memory, so the processes do
+not receive copies of the image.
+
+Note: every function the workers run is defined at module level in this file.
+With the "spawn" start method (Windows, Jupyter) the workers import filters.py
+and can only find top-level functions.
+"""
+
+import ctypes
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+from PIL import Image
+
+try:
+    import multiprocess as mp          # dill-based, works better inside notebooks
+except ImportError:
+    import multiprocessing as mp
+
+
+# ======================================================================
+# 8. Worker side (runs inside each Pool process)
+# ======================================================================
+# Each worker fills these once, in _init_worker, so the big arrays are not
+# sent again with every task.
+_shared_padded = None
+_shared_out = None
+_shared_mask = None
+
+
+def _init_worker(shared_padded, padded_shape, shared_out, out_shape, mask):
+    """Pool initializer: stores numpy views of the shared blocks.
+
+    np.frombuffer does not copy: the views point to the same shared memory
+    that the main process created, so writes to _shared_out are seen by it.
+    """
+    global _shared_padded, _shared_out, _shared_mask
+    _shared_padded = np.frombuffer(shared_padded, dtype=np.float64).reshape(padded_shape)
+    _shared_out = np.frombuffer(shared_out, dtype=np.float64).reshape(out_shape)
+    _shared_mask = mask
+
+
+def _filter_strip(strip):
+    """Task of one worker: filter the rows [start, end) with A's filter_rows."""
+    start, end = strip
+    filter_rows(_shared_padded, _shared_mask, _shared_out, start, end)
+
+
+# ======================================================================
+# 9. Helpers of the main process
+# ======================================================================
+def _load_image(image):
+    """Accepts a numpy array or a path (str / PathLike) to an image file."""
+    if isinstance(image, (str, os.PathLike)):
+        return np.array(Image.open(image))
+    return np.asarray(image)
+
+
+def _check_numprocs(numprocs):
+    """numprocs must be an integer >= 1 (bool is not accepted)."""
+    if isinstance(numprocs, bool) or not isinstance(numprocs, (int, np.integer)):
+        raise ValueError(f"numprocs must be an integer, got {type(numprocs).__name__}.")
+    if numprocs < 1:
+        raise ValueError(f"numprocs must be >= 1, got {numprocs}.")
+
+
+def _split_rows(M, numprocs):
+    """Splits the rows 0..M-1 into numprocs contiguous strips [start, end).
+
+    Strip sizes differ by at most one row. If numprocs > M some strips would
+    be empty; those are dropped.
+    """
+    bounds = np.linspace(0, M, numprocs + 1).astype(int)
+    return [(int(bounds[k]), int(bounds[k + 1]))
+            for k in range(numprocs) if bounds[k + 1] > bounds[k]]
+
+
+# ======================================================================
+# 10. Parallel filter
+# ======================================================================
+def image_filter(image: np.ndarray,
+                 filter: np.ndarray,
+                 numprocs: int,
+                 is_conv: int,
+                 norm: int) -> np.ndarray:
+    """Applies the 2D filter to the image using numprocs processes.
+
+    image can be a numpy array (greyscale (M, N) or colour (M, N, C)) or a
+    path to an image file. Returns a uint8 image with the same shape.
+    """
+    _check_numprocs(numprocs)
+    image = _load_image(image)
+    original_ndim = image.ndim
+
+    # Same preparation as filter_sequential (Part A), in the main process.
+    img = to_3d(image).astype(np.float64)        # wide type BEFORE operating
+    mask = prepare_mask(filter, is_conv)         # validates, rotates, normalises
+    a, b = (mask.shape[0] - 1) // 2, (mask.shape[1] - 1) // 2
+    padded = pad_replicate(img, a, b)
+    M, N, C = img.shape
+
+    # Shared memory: padded input (read only) and output sums S (M, N, C).
+    #
+    # Why no lock is needed (and so RawArray and not Array):
+    #   - the padded input is only read by the workers, never written;
+    #   - the strips never overlap, so every output pixel has exactly one
+    #     writer and two processes never write to the same position;
+    #   - the min/max for norm=1 is computed in finalize, after all the
+    #     workers have finished.
+    # Array would add a lock that is never needed and only slows things down.
+    shared_padded = mp.RawArray(ctypes.c_double, padded.size)
+    np.frombuffer(shared_padded, dtype=np.float64).reshape(padded.shape)[:] = padded
+    shared_out = mp.RawArray(ctypes.c_double, M * N * C)
+
+    # Medium-grained parallelism: one contiguous strip of rows per process.
+    strips = _split_rows(M, numprocs)
+
+    with mp.Pool(processes=numprocs,
+                 initializer=_init_worker,
+                 initargs=(shared_padded, padded.shape, shared_out, img.shape, mask)) as pool:
+        pool.map(_filter_strip, strips)
+
+    # Copy S out of shared memory before it is released.
+    S = np.frombuffer(shared_out, dtype=np.float64).reshape(M, N, C).copy()
+
+    # finalize runs here, in the main process: the min-max rescaling (norm=1)
+    # needs the min and max of the WHOLE image, which no single worker has.
+    return from_3d(finalize(S, norm), original_ndim)
+
+
+# ======================================================================
+# 11. Two filters at the same time
+# ======================================================================
+def parallel_filtering(image: np.ndarray,
+                       filter1: np.ndarray,
+                       filter2: np.ndarray,
+                       numprocs: int,
+                       is_conv: int,
+                       norm: int):
+    """Applies filter1 and filter2 to the same image at the same time.
+
+    Each filter is an image_filter call with numprocs processes, so up to
+    2*numprocs processes work at once. Returns (result1, result2).
+    """
+    _check_numprocs(numprocs)
+    image = _load_image(image)                   # read the file only once
+
+    # Why threads and not processes: the Pool workers are daemonic and a
+    # daemonic process cannot create its own Pool, so image_filter cannot run
+    # inside a Pool worker. Each thread only starts its Pool and waits for it;
+    # the filtering itself runs in the worker processes, so the GIL is not a
+    # problem.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(image_filter, image, filter1, numprocs, is_conv, norm)
+        future2 = executor.submit(image_filter, image, filter2, numprocs, is_conv, norm)
+        return future1.result(), future2.result()
