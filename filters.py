@@ -112,7 +112,7 @@ def filter_rows(padded, mask, out, row_start, row_end):
 
 
 # ======================================================================
-# 5. Post-procesado: saturation o rescaling
+# 5. Post-processing: saturation o rescaling
 # ======================================================================
 def finalize(S, norm):
     """Transforms the sums S (float64, (M, N, C)) into a uint8 image.
@@ -158,7 +158,7 @@ def from_3d(result, original_ndim):
 
 
 # ======================================================================
-# 7. Complete sequential version (reference for B and C)
+# 7. Complete sequential version
 # ======================================================================
 def filter_sequential(image, mask, is_conv=0, norm=0):
     """Applies the filter to the entire image with a single process."""
@@ -175,7 +175,7 @@ def filter_sequential(image, mask, is_conv=0, norm=0):
 
     return from_3d(finalize(S, norm), original_ndim)
 
-# ========== PARTE B: parallelization (just B edits) ==========
+# ========== PART B: parallelization (just B edits) ==========
 
 """
 PART B: parallel version of the filter.
@@ -205,8 +205,7 @@ except ImportError:
 # ======================================================================
 # 8. Worker side (runs inside each Pool process)
 # ======================================================================
-# Each worker fills these once, in _init_worker, so the big arrays are not
-# sent again with every task.
+
 _shared_padded = None
 _shared_out = None
 _shared_mask = None
