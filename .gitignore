@@ -17,3 +17,11 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
+# backups
+*.bak
+
+# carpeta local con venv y basura de macOS (no la queremos en el repo)
+Practical Work 01/
+
+# documento interno de organización del grupo
+Massive Computing*.pdf
